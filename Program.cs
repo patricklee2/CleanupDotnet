@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Xml.Linq;
 
 namespace CleanupDotnet
 {
@@ -18,59 +19,85 @@ namespace CleanupDotnet
             "dotnet\\shared\\Microsoft.AspNetCore.All",
             "dotnet\\shared\\Microsoft.AspNetCore.App",
             "dotnet\\host\\fxr"};
+        private static string RapidUpdateXMLPath = "rapidupdate.xml";
 
         static void Main(string[] args)
         {
-            Console.WriteLine("Found dotnet runtimes!");
-            Console.WriteLine("x86");
-            foreach (String version in GetRuntimes(programFilesx86))
-            {
-                Console.WriteLine(version);
-            }
-            Console.WriteLine("x64");
-            foreach (String version in GetRuntimes(programFilesx64))
-            {
-                Console.WriteLine(version);
-            }
+            RapidUpdateXMLPath = GetRapidUpdateFeedXMLPath();
+            Console.WriteLine(String.Format("RapidUpdateFeed XML file path: {0}", RapidUpdateXMLPath));
 
-            Console.WriteLine("old dotnet runtimes");
-            Console.WriteLine("x86");
+            bool isX86 = true;
+            Console.WriteLine(String.Format("Dotnet x86 runtimes found on RapidUpdateFeed: {0}", String.Join(", ", getRapidUpdateRuntimes(RapidUpdateXMLPath, isX86))));
+            Console.WriteLine(String.Format("Dotnet x64 runtimes found on RapidUpdateFeed: {0}", String.Join(", ", getRapidUpdateRuntimes(RapidUpdateXMLPath, !isX86))));
+
+            Console.WriteLine(String.Format("Dotnet x86 runtimes found locally: {0}", String.Join(", ", GetRuntimes(programFilesx86))));
+            Console.WriteLine(String.Format("Dotnet x64 runtimes found locally: {0}", String.Join(", ", GetRuntimes(programFilesx64))));
+            
+            Console.WriteLine(String.Format("Outdated Dotnet x86 runtimes: {0}", String.Join(", ", GetOldRuntimes(programFilesx86))));
+            Console.WriteLine(String.Format("Outdated Dotnet x64 runtimes: {0}", String.Join(", ", GetOldRuntimes(programFilesx64))));
+
+            DeleteOldRuntimes();
+        }
+
+        static string GetRapidUpdateFeedXMLPath()
+        {
+            string[] arguments = Environment.GetCommandLineArgs();
+            if (arguments.Length >= 2)
+            {
+                RapidUpdateXMLPath = arguments[1];
+            }
+            else
+            {
+                if (Directory.Exists("C:\\Resources\\Directory"))
+                {
+                    String feedDirectory = Directory.GetDirectories("C:\\Resources\\Directory")
+                                            .Where(name => name.ToLower().Contains("offlinefeed"))
+                                            .ToList<String>()
+                                            .FirstOrDefault<String>();
+                    RapidUpdateXMLPath = String.Format("{0}\\feed-rapidupdate\\main\\feeds\\latest\\rapidupdate.xml", feedDirectory);
+                }
+            }
+            return RapidUpdateXMLPath;
+        }
+
+        static void DeleteOldRuntimes()
+        {
+            Console.WriteLine("Deleting old runtimes");
             foreach (String version in GetOldRuntimes(programFilesx86))
             {
-                Console.WriteLine(version);
-            }
-            Console.WriteLine("x64");
-            foreach (String version in GetOldRuntimes(programFilesx64))
-            {
-                Console.WriteLine(version);
-            }
-
-            Console.WriteLine("x86");
-            foreach (String version in GetRuntimes(programFilesx86))
-            {
-                if (IsRuntimeInUse(programFilesx86, version)) 
+                if (IsRuntimeInUse(programFilesx86, version))
                 {
-                    Console.WriteLine(String.Format("{0} in use", version));
+                    Console.WriteLine(String.Format("{0} x86 in use", version));
                 }
                 else
                 {
-                    Console.WriteLine(String.Format("{0} not in use", version));
+                    Console.WriteLine(String.Format("{0} x86 not in use", version));
                     DeleteRuntimes(programFilesx86, version);
                 }
             }
-            Console.WriteLine("x64");
-            foreach (String version in GetRuntimes(programFilesx64))
+
+            foreach (String version in GetOldRuntimes(programFilesx64))
             {
                 if (IsRuntimeInUse(programFilesx64, version))
                 {
-                    Console.WriteLine(String.Format("{0} in use", version));
+                    Console.WriteLine(String.Format("{0} x64 in use", version));
                 }
                 else
                 {
-                    Console.WriteLine(String.Format("{0} not in use", version));
+                    Console.WriteLine(String.Format("{0} x64 not in use", version));
                     DeleteRuntimes(programFilesx64, version);
                 }
             }
+        }
+
+        static string CoreclrDLLPath(string programFiles, string version)
+        {
+            return string.Format("{0}\\{1}\\{2}\\{3}", programFiles, runtimesDir, version, coreclrDLL);
+        }
+
+        static string SystemRuntimeDLLPath(string programFiles, string version)
+        {
+            return string.Format("{0}\\{1}\\{2}\\{3}", programFiles, runtimesDir, version, systemRuntimeDLL);
         }
 
         static void DeleteRuntimes(string programFiles, string version)
@@ -82,6 +109,17 @@ namespace CleanupDotnet
                     string directoryPath = String.Format("{0}\\{1}\\{2}", programFiles, directory, version);
                     if (Directory.Exists(directoryPath))
                     {
+                        // delete dll locks first to prevent race condition
+                        string coreclrDLLPath = CoreclrDLLPath(programFiles, version);
+                        string systemRuntimeDLLPath = SystemRuntimeDLLPath(programFiles, version);
+                        if (File.Exists(coreclrDLLPath))
+                        {
+                            //File.Delete(coreclrDLLPath);
+                        }
+                        if (File.Exists(systemRuntimeDLLPath))
+                        {
+                            //File.Delete(systemRuntimeDLLPath));
+                        }
                         //Directory.Delete(directoryPath, true);
                         Console.WriteLine(String.Format("Deleted {0}", directoryPath));
 
@@ -134,29 +172,12 @@ namespace CleanupDotnet
         {
             try
             {
-                Dictionary<String, List<String>> runtimesDictionary = new Dictionary<String, List<String>>();
                 List<String> runtimesList = GetRuntimes(programfiles);
-
-                // group runtimes by major version
-                foreach (String version in runtimesList)
+                List<String> feedRuntimes = getRapidUpdateRuntimes(RapidUpdateXMLPath, programfiles.ToLowerInvariant().Contains("x86"));
+                
+                foreach (String runtime in feedRuntimes)
                 {
-                    string major = version.Substring(0, version.LastIndexOf("."));
-                    string minor = version.Substring(version.LastIndexOf(".") + 1);
-
-                    if (runtimesDictionary.ContainsKey(major))
-                    {
-                        runtimesDictionary[major].Add(minor);
-                    }
-                    else
-                    {
-                        runtimesDictionary.Add(major, new List<String> { minor });
-                    }
-                }
-
-                // for each major version, remove latest version
-                foreach (String key in runtimesDictionary.Keys)
-                {
-                    runtimesList.Remove(String.Format("{0}.{1}", key, runtimesDictionary[key].Max()));
+                    runtimesList.Remove(runtime);
                 }
 
                 return runtimesList;
@@ -168,10 +189,31 @@ namespace CleanupDotnet
             }
         }
 
+        static List<String> getRapidUpdateRuntimes(string path, bool x86)
+        {
+            XElement feed = XElement.Load(path);
+            IEnumerable<String> runtimes;
+            if (x86)
+            {
+                runtimes = from entry in feed.Descendants("{http://www.w3.org/2005/Atom}entry")
+                           where ((String)entry.Element("{http://www.w3.org/2005/Atom}title")).Equals("dotnet-runtime-win-x86")
+                           select entry.Element("{http://www.w3.org/2005/Atom}version").Value;
+            }
+            else
+            {
+                runtimes = from entry in feed.Descendants("{http://www.w3.org/2005/Atom}entry")
+                           where ((String)entry.Element("{http://www.w3.org/2005/Atom}title")).Equals("dotnet-runtime-win-x64")
+                           select entry.Element("{http://www.w3.org/2005/Atom}version").Value;
+            }
+
+            return runtimes.ToList();
+        }
+
+        // check if coreclr and system.runtime dll are in use
         static bool IsRuntimeInUse(string programFiles, string version)
         {
-            string coreclrDLLPath = string.Format("{0}\\{1}\\{2}\\{3}", programFiles, runtimesDir, version, coreclrDLL);
-            string systemRuntimeDLLPath = string.Format("{0}\\{1}\\{2}\\{3}", programFiles, runtimesDir, version, systemRuntimeDLL);
+            string coreclrDLLPath = CoreclrDLLPath(programFiles, version);
+            string systemRuntimeDLLPath = SystemRuntimeDLLPath(programFiles, version);
             return IsFileLocked(coreclrDLLPath, FileAccess.Write) || IsFileLocked(systemRuntimeDLLPath, FileAccess.Write);
         }
         
@@ -179,6 +221,10 @@ namespace CleanupDotnet
         {
             try
             {
+                if (!File.Exists(fileName))
+                {
+                    return false;
+                }
                 using (var fs = new FileStream(fileName, FileMode.Open, fileAccess))
                 {
                     fs.Close();
